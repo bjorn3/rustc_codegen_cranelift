@@ -7,14 +7,19 @@ mod object;
 mod types;
 mod unwind;
 
-use cranelift_codegen::ir::Endianness;
+use cranelift_codegen::ir::immediates::Offset32;
+use cranelift_codegen::ir::{Endianness, ValueLabel};
 use cranelift_codegen::isa::TargetIsa;
+use cranelift_codegen::{CompiledCode, LabelValueLoc};
 use cranelift_module::DataId;
 use gimli::write::{
-    Address, AttributeValue, DwarfUnit, Expression, FileId, LineProgram, LineString, Range,
-    RangeList, UnitEntryId,
+    Address, AttributeValue, DwarfUnit, Expression, FileId, LineProgram, LineString, LocationList,
+    Range, RangeList, UnitEntryId,
 };
-use gimli::{AArch64, Encoding, Format, LineEncoding, Register, RiscV, RunTimeEndian, X86_64};
+use gimli::{
+    AArch64, DW_TAG_variable, Encoding, Format, LineEncoding, Register, RiscV, RunTimeEndian,
+    X86_64,
+};
 use indexmap::IndexSet;
 use rustc_codegen_ssa::debuginfo::type_names;
 use rustc_hir::def::DefKind;
@@ -28,7 +33,7 @@ use rustc_target::callconv::FnAbi;
 pub(crate) use self::emit::{DebugReloc, DebugRelocName};
 pub(crate) use self::types::TypeDebugContext;
 pub(crate) use self::unwind::{EXCEPTION_HANDLER_CATCH, EXCEPTION_HANDLER_CLEANUP, UnwindContext};
-use crate::debuginfo::emit::{address_for_data, address_for_func};
+use crate::debuginfo::emit::{address_for_data, address_for_func, address_for_func_with_addend};
 use crate::prelude::*;
 
 pub(crate) fn producer(sess: &Session) -> String {
@@ -52,6 +57,16 @@ pub(crate) struct FunctionDebugContext {
     entry_id: Option<UnitEntryId>,
     function_source_loc: (FileId, u64, u64),
     source_loc_set: IndexSet<(FileId, u64, u64)>,
+    locals: Vec<(UnitEntryId, DebugLocal)>,
+}
+
+#[derive(Debug)]
+pub(crate) enum DebugLocal {
+    Var(ValueLabel),
+    VarPair(ValueLabel, ValueLabel),
+    Stack(StackSlot, Offset32),
+    //Addr()
+    Unknown,
 }
 
 impl DebugContext {
@@ -226,6 +241,7 @@ impl DebugContext {
                 entry_id: None,
                 function_source_loc: (file_id, line, column),
                 source_loc_set: IndexSet::new(),
+                locals: vec![],
             };
         }
 
@@ -292,6 +308,7 @@ impl DebugContext {
             entry_id: Some(entry_id),
             function_source_loc: (file_id, line, column),
             source_loc_set: IndexSet::new(),
+            locals: vec![],
         }
     }
 
@@ -359,13 +376,46 @@ impl DebugContext {
 }
 
 impl FunctionDebugContext {
+    pub(crate) fn add_local<'tcx>(
+        &mut self,
+        tcx: TyCtxt<'tcx>,
+        debug_context: &mut DebugContext,
+        type_dbg: &mut TypeDebugContext<'tcx>,
+        name: String,
+        ty: Ty<'tcx>,
+        local: DebugLocal,
+    ) {
+        //assert!(place.projection.is_empty()); // FIXME implement them
+
+        if let Some(entry_id) = self.entry_id {
+            let dw_ty = debug_context.debug_type(tcx, type_dbg, ty);
+
+            let var_id = debug_context.dwarf.unit.add(entry_id, DW_TAG_variable);
+            let var_entry = debug_context.dwarf.unit.get_mut(var_id);
+
+            var_entry.set(gimli::DW_AT_name, AttributeValue::String(name.into_bytes()));
+            var_entry.set(gimli::DW_AT_type, AttributeValue::UnitRef(dw_ty));
+
+            self.locals.push((var_id, local));
+        }
+    }
+
     pub(crate) fn finalize(
         mut self,
         debug_context: &mut DebugContext,
+        isa: &dyn TargetIsa,
         func_id: FuncId,
         context: &Context,
     ) {
         let end = self.create_debug_lines(debug_context, func_id, context);
+
+        let compiled_code = context.compiled_code().unwrap();
+        for (var_id, local) in self.locals {
+            let location = place_location(debug_context, isa, func_id, compiled_code, local);
+
+            let var_entry = debug_context.dwarf.unit.get_mut(var_id);
+            var_entry.set(gimli::DW_AT_location, location);
+        }
 
         debug_context
             .unit_range_list
@@ -378,6 +428,77 @@ impl FunctionDebugContext {
             entry.set(gimli::DW_AT_low_pc, AttributeValue::Address(address_for_func(func_id)));
             // Using Udata for DW_AT_high_pc requires at least DWARF4
             entry.set(gimli::DW_AT_high_pc, AttributeValue::Udata(u64::from(end)));
+        }
+    }
+}
+
+fn place_location(
+    debug_context: &mut DebugContext,
+    isa: &dyn TargetIsa,
+    func_id: FuncId,
+    compiled_code: &CompiledCode,
+    local: DebugLocal,
+) -> AttributeValue {
+    let loc_list = match local {
+        DebugLocal::Var(value_label) => {
+            if let Some(value_loc_ranges) = compiled_code.value_labels_ranges.get(&value_label) {
+                value_loc_ranges
+                    .iter()
+                    .map(|value_loc_range| gimli::write::Location::StartEnd {
+                        begin: address_for_func_with_addend(
+                            func_id,
+                            i64::from(value_loc_range.start),
+                        ),
+                        end: address_for_func_with_addend(func_id, i64::from(value_loc_range.end)),
+                        data: translate_loc(isa, value_loc_range.loc).unwrap(),
+                    })
+                    .collect()
+            } else {
+                vec![]
+            }
+        }
+        DebugLocal::VarPair(value_label1, value_label2) => {
+            // FIXME implement this
+
+            vec![]
+        }
+        DebugLocal::Stack(stack_slot, offset) => {
+            if false {
+                let stack_offset = todo!() as u32; //compiled_code.stackslot_offsets[stack_slot];
+                let offset = i64::from(stack_offset) + i64::from(offset);
+                let mut expr = Expression::new();
+                expr.op_breg(X86_64::RSP, offset);
+                return AttributeValue::Exprloc(expr);
+            } else {
+                // FIXME implement this
+                vec![]
+            }
+        }
+        DebugLocal::Unknown => {
+            // FIXME implement this
+
+            vec![]
+        }
+    };
+
+    let loc_list_id = debug_context.dwarf.unit.locations.add(LocationList(loc_list));
+    AttributeValue::LocationListRef(loc_list_id)
+}
+
+// Adapted from https://github.com/CraneStation/wasmtime/blob/5a1845b4caf7a5dba8eda1fef05213a532ed4259/crates/debug/src/transform/expression.rs#L59-L137
+fn translate_loc(isa: &dyn TargetIsa, loc: LabelValueLoc) -> Option<Expression> {
+    match loc {
+        LabelValueLoc::Reg(reg) => {
+            let machine_reg = isa.map_regalloc_reg_to_dwarf(reg).unwrap();
+            let mut expr = Expression::new();
+            expr.op_reg(gimli::Register(machine_reg));
+            Some(expr)
+        }
+        LabelValueLoc::CFAOffset(offset) => {
+            let mut expr = Expression::new();
+            expr.op_fbreg(offset);
+            expr.op_deref();
+            Some(expr)
         }
     }
 }

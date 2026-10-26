@@ -12,7 +12,7 @@ use rustc_target::callconv::FnAbi;
 use rustc_target::spec::{Arch, HasTargetSpec, Target};
 
 use crate::constant::ConstantCx;
-use crate::debuginfo::FunctionDebugContext;
+use crate::debuginfo::{FunctionDebugContext, TypeDebugContext};
 use crate::prelude::*;
 
 pub(crate) fn pointer_ty(tcx: TyCtxt<'_>) -> types::Type {
@@ -273,6 +273,7 @@ pub(crate) fn create_wrapper_function(
 pub(crate) struct FunctionCx<'m, 'clif, 'tcx: 'm> {
     pub(crate) module: &'m mut dyn Module,
     pub(crate) debug_context: Option<&'clif mut DebugContext>,
+    pub(crate) type_dbg: &'clif mut TypeDebugContext<'tcx>,
     pub(crate) tcx: TyCtxt<'tcx>,
     pub(crate) target_config: TargetFrontendConfig, // Cached from module
     pub(crate) pointer_type: Type,                  // Cached from module

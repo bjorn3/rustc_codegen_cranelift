@@ -251,6 +251,22 @@ fn make_local_place<'tcx>(
         CPlace::new_stack_slot(fx, layout)
     };
 
+    if let Some(func_debug_fx) = &mut fx.func_debug_cx {
+        if fx.symbol_name.contains("take_f32") {
+            with_no_trimmed_paths!({
+                dbg!(local, place, place.debug_local());
+            });
+        }
+        func_debug_fx.add_local(
+            fx.tcx,
+            fx.debug_context.as_mut().unwrap(),
+            fx.type_dbg,
+            format!("{local:?}"),
+            place.layout().ty,
+            place.debug_local(),
+        );
+    }
+
     self::comments::add_local_place_comments(fx, place, local);
 
     place

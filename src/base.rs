@@ -96,6 +96,7 @@ pub(crate) fn codegen_fn<'tcx>(
     let mut fx = FunctionCx {
         module,
         debug_context,
+        type_dbg,
         tcx,
         target_config,
         pointer_type,
@@ -248,11 +249,16 @@ pub(crate) fn compile_fn(
         }
     }
 
+    if codegened_func.symbol_name.contains("take_f32") {
+        dbg!(&codegened_func.symbol_name, &context.compiled_code().unwrap().value_labels_ranges);
+    }
+
     // Define debuginfo for function
     prof.generic_activity("generate debug info").run(|| {
         if let Some(debug_context) = debug_context {
             codegened_func.func_debug_cx.unwrap().finalize(
                 debug_context,
+                module.isa(),
                 codegened_func.func_id,
                 context,
             );

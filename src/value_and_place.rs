@@ -1,11 +1,14 @@
 //! Definition of [`CValue`] and [`CPlace`]
 
 use cranelift_codegen::entity::EntityRef;
+use cranelift_codegen::ir::ValueLabel;
 use cranelift_codegen::ir::immediates::Offset32;
 use cranelift_frontend::Variable;
 use rustc_middle::ty::FnSig;
 use rustc_middle::ty::layout::HasTypingEnv;
 
+use crate::debuginfo::DebugLocal;
+use crate::pointer::PointerBase;
 use crate::prelude::*;
 
 fn codegen_field<'tcx>(
@@ -427,14 +430,14 @@ impl<'tcx> CPlace<'tcx> {
         match self.inner {
             CPlaceInner::Var(_local, var) => {
                 let val = fx.bcx.use_var(var);
-                //fx.bcx.set_val_label(val, cranelift_codegen::ir::ValueLabel::new(var.index()));
+                fx.bcx.set_val_label(val, ValueLabel::new(var.index()));
                 CValue::by_val(val, layout)
             }
             CPlaceInner::VarPair(_local, var1, var2) => {
                 let val1 = fx.bcx.use_var(var1);
-                //fx.bcx.set_val_label(val1, cranelift_codegen::ir::ValueLabel::new(var1.index()));
+                fx.bcx.set_val_label(val1, ValueLabel::new(var1.index()));
                 let val2 = fx.bcx.use_var(var2);
-                //fx.bcx.set_val_label(val2, cranelift_codegen::ir::ValueLabel::new(var2.index()));
+                fx.bcx.set_val_label(val2, ValueLabel::new(var2.index()));
                 CValue::by_val_pair(val1, val2, layout)
             }
             CPlaceInner::Addr(ptr, extra) => {
@@ -468,6 +471,21 @@ impl<'tcx> CPlace<'tcx> {
                     }
                 }
             }
+        }
+    }
+
+    pub(crate) fn debug_local(self) -> DebugLocal {
+        match self.inner {
+            CPlaceInner::Var(local, var) => DebugLocal::Var(ValueLabel::new(var.index())),
+            CPlaceInner::VarPair(local, var1, var2) => {
+                DebugLocal::VarPair(ValueLabel::new(var1.index()), ValueLabel::new(var2.index()))
+            }
+            CPlaceInner::Addr(pointer, None) => match pointer.debug_base_and_offset() {
+                (PointerBase::Addr(addr), offset) => DebugLocal::Unknown,
+                (PointerBase::Stack(stack_slot), offset) => DebugLocal::Stack(stack_slot, offset),
+                (PointerBase::Dangling(align), offset) => DebugLocal::Unknown,
+            },
+            CPlaceInner::Addr(_, Some(_)) => unreachable!(),
         }
     }
 
@@ -535,7 +553,7 @@ impl<'tcx> CPlace<'tcx> {
                 dst_ty,
             );
             let data = if src_ty == dst_ty { data } else { codegen_bitcast(fx, dst_ty, data) };
-            //fx.bcx.set_val_label(data, cranelift_codegen::ir::ValueLabel::new(var.index()));
+            fx.bcx.set_val_label(data, ValueLabel::new(var.index()));
             fx.bcx.def_var(var, data);
         }
 

@@ -15,6 +15,12 @@ pub(super) fn address_for_func(func_id: FuncId) -> Address {
     Address::Symbol { symbol: symbol as usize, addend: 0 }
 }
 
+pub(super) fn address_for_func_with_addend(func_id: FuncId, addend: i64) -> Address {
+    let symbol = func_id.as_u32();
+    assert!(symbol & 1 << 31 == 0);
+    Address::Symbol { symbol: symbol as usize, addend }
+}
+
 pub(super) fn address_for_data(data_id: DataId) -> Address {
     let symbol = data_id.as_u32();
     assert!(symbol & 1 << 31 == 0);

@@ -596,6 +596,7 @@ impl<'a> TestRunner<'a> {
         cmd.arg("--edition=2024");
         // implicitly passed when building inside the rust repo
         cmd.arg("-Zforce-unstable-if-unmarked");
+        cmd.arg("-Ccodegen-units=1");
         cmd.args(args);
         cmd
     }
